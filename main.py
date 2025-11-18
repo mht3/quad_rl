@@ -9,6 +9,17 @@ import wandb
 import numpy as np
 import copy 
 
+from gymnasium.wrappers import FrameStackObservation, FlattenObservation
+
+class HistoryWrapper(FrameStackObservation):    
+    def reset(self, **kwargs):
+        obs, info = super().reset(**kwargs)
+        return np.array(obs), info
+    
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+        return np.array(obs), reward, terminated, truncated, info
+
 def parse_args():
     '''
     Parse command line arguments for training/testing a model.
@@ -31,7 +42,8 @@ def parse_args():
     parser.add_argument('--render', action='store_true', help='Flag for rendering the environment.')
     parser.add_argument('--debug', action='store_true', help='Flag for debugging the training process. Turns wandb logging off.')
     parser.add_argument("--num_test_episodes", help='Number of test episodes to use for model testing.', type=int, default=5)
-
+    parser.add_argument('--history_len', help='Window size for observation history. Defaults to 1 (no history)', type=int, default=1)
+    parser.add_argument('--flatten_observation', action='store_true', help='Flag for flattening the observation space. Useful for MLPs and when history is being used.')
     # Parse known arguments before parsing remainder of training args
     args, _ = parser.parse_known_args()
 
@@ -67,7 +79,8 @@ def parse_args():
     # default log name on weights and biases
     default_log_name = args.algorithm + '_s_{}'.format(args.seed)
     log_name = algorithm_train_kwargs.get('log_name', default_log_name)
-
+    if args.history_len > 1:
+        log_name = log_name + '_obs_history_{}'.format(args.history_len)
     # parse optional environment kwargs
     if env_id in environments.CUSTOM_ENV_CLASSES:
         env_specific_kwargs = env_class.get_env_kwargs(args)
@@ -95,7 +108,7 @@ def parse_args():
     algorithm_init_kwargs['logger'] = logger
 
     algorithm_params = (algorithm_class, algorithm_init_kwargs, algorithm_train_kwargs)
-    return train, env_id, env_kwargs, algorithm_params, model_path, args.num_test_episodes
+    return train, env_id, env_kwargs, algorithm_params, model_path, args.num_test_episodes, args.history_len, args.flatten_observation 
 
 def test_model(model, test_env, num_episodes=1):
     rewards = []
@@ -117,13 +130,18 @@ def init_wandb(config, log_name):
     return run
     
 def main():
-    train, env_id, env_kwargs, algorithm_params, model_path, num_test_episodes = parse_args()
+    train, env_id, env_kwargs, algorithm_params, model_path, num_test_episodes, history_len, flatten_obs = parse_args()
 
     # environment initialization
     print("Loading environment...", end=' ')
     env = gym.make(env_id, **env_kwargs)
     print("Done.")
 
+    if history_len > 1:
+        # observation history for sequential data
+        env = HistoryWrapper(env, history_len)
+    if flatten_obs:
+        env = FlattenObservation(env)
     # algorithm initialization
     algorithm_class, algorithm_init_kwargs, algorithm_train_kwargs = algorithm_params
     algorithm = algorithm_class(**algorithm_init_kwargs)

@@ -11,7 +11,7 @@ class QuadrotorFixedEnv(gym.Env):
     metadata = {"render_modes": ["human"], "render_fps": 30}
 
     def __init__(self, waypoints=None, total_time=None, render_mode=None, control_motors=True,
-                 normalized_actions=True, fully_observable=False, boundary_length=5, rew_mode='basic',
+                 normalized_actions=True, fully_observable=True, boundary_length=5,
                  time_per_waypoint=0.15625, add_takeoff_waypoint=False):
         '''
         Initializes the quadrotor environment. Race track is a single lissajous curves with many twists and turns. Reference trajectory is 18 seconds, or 1800 steps. The only randomized parameter is this height of the curve.
@@ -29,9 +29,6 @@ class QuadrotorFixedEnv(gym.Env):
             Flag for if the state is fully observable. If False the state is assumed to be noisy measurements of (x, y, z, yaw).
         boundary_length:
             Boundary side length for arena centered at the origin. Defaults to 5 meters.
-        rew_mode: (str)
-            Reward mode. Should be one of `basic` or `advanced`. `basic` will penalize the distance to the nearest reference trajectory and add +1 each step quadrotor doesn't crash.
-                         `advanced` will take the negative sum of penalties on states and inputs (LQR penalty).
         default_time_per_waypoint: float
             Time per waypoint for quadrotor.
         add_takeoff_waypoint: bool
@@ -53,10 +50,6 @@ class QuadrotorFixedEnv(gym.Env):
         self.max_time_steps = int(self.max_runtime / self.dt)
         self.max_reference_time_steps = int(self.total_time / self.dt)
         self.control_motors = control_motors
-        # check reward mode
-        self.rew_mode = rew_mode.lower()
-        if self.rew_mode not in ['basic', 'advanced']:
-            raise ValueError('`rew_mode` must be one of `basic` or `advanced` but found `{}`.'.format(rew_mode))
         # gravity (m/s^2)
         self.g = 9.81
         # mass of drone kg
@@ -100,11 +93,11 @@ class QuadrotorFixedEnv(gym.Env):
 
         self.fully_observable = fully_observable
 
-        # full state space is position, orientation, linear velocity, and angular velocity and reference (x, y, z, yaw)
+        # full state space is position, orientation, linear velocity, and angular velocity and reference (x, y, z, yaw, vx, vy, vz)
         state_high = np.array([boundary_length/2, boundary_length/2, boundary_length, np.pi, np.pi, np.pi, 5, 5, 5, np.pi, np.pi, np.pi,
-                                boundary_length/2, boundary_length/2, boundary_length, np.pi,], dtype=np.float32)
+                                boundary_length/2, boundary_length/2, boundary_length, np.pi, 5, 5, 5], dtype=np.float32)
         state_low = np.array([-boundary_length/2, -boundary_length/2, 0, -np.pi, -np.pi, -np.pi, -5, -5, -5, -np.pi, -np.pi, -np.pi,
-                            -boundary_length/2, -boundary_length/2, 0, -np.pi,], dtype=np.float32)
+                            -boundary_length/2, -boundary_length/2, 0, -np.pi, -5, -5, -5], dtype=np.float32)
 
         self.state_space = Box(low=state_low, high=state_high, dtype=np.float32)
 
@@ -155,12 +148,14 @@ class QuadrotorFixedEnv(gym.Env):
             self.quadrotor.set_waypoints(self.waypoints)
             self.quadrotor.set_reference_trajectory(self.reference)
 
+        # info keywords for logging.
+        self.info_keywords = ('position_rew', 'angle_rew', 'velocity_rew', 'survival_rew', 'action_reg_rew')
+
         # initialize and reset env
         self.reset()
 
     @staticmethod
     def add_args(parser):
-        parser.add_argument('--rew_mode', choices=['basic', 'advanced'], default='basic')
         parser.add_argument('--no_control_motors', action='store_false', dest='control_motors', default=True)
         parser.add_argument('--no_normalized_actions', action='store_false', dest='normalized_actions', default=True)
         parser.add_argument('--partially_observable', action='store_false', dest='fully_observable', default=True)
@@ -171,8 +166,7 @@ class QuadrotorFixedEnv(gym.Env):
     
     @staticmethod
     def get_env_kwargs(args):
-        kwargs = {'rew_mode': args.rew_mode,
-                  'control_motors': args.control_motors,
+        kwargs = {'control_motors': args.control_motors,
                   'normalized_actions': args.normalized_actions,
                   'fully_observable': args.fully_observable,
                   'boundary_length': args.boundary_length,
@@ -308,9 +302,10 @@ class QuadrotorFixedEnv(gym.Env):
             self.z_coeffs[i] = traj.z_c.flatten()
 
         # get datapoints for reference trajectory at each state
+        # reference shape: (7, total_time_steps) = [x, y, z, yaw, vx, vy, vz]
         time_step_per_waypoint = int(time_per_waypoint / self.dt)
         total_time_steps = time_step_per_waypoint * (num_waypoints - 1)
-        reference = np.empty(shape=(4, total_time_steps))
+        reference = np.empty(shape=(7, total_time_steps))
         time_step = 0
         for i in range(num_waypoints - 1):
             time = 0
@@ -319,6 +314,10 @@ class QuadrotorFixedEnv(gym.Env):
                 ref_x_pos = TrajectoryGenerator.calculate_position(self.x_coeffs[i], time)
                 ref_y_pos = TrajectoryGenerator.calculate_position(self.y_coeffs[i], time)
                 ref_z_pos = TrajectoryGenerator.calculate_position(self.z_coeffs[i], time)
+                # get velocities
+                ref_x_vel = TrajectoryGenerator.calculate_velocity(self.x_coeffs[i], time)
+                ref_y_vel = TrajectoryGenerator.calculate_velocity(self.y_coeffs[i], time)
+                ref_z_vel = TrajectoryGenerator.calculate_velocity(self.z_coeffs[i], time)
                 # assume yaw is constant for the current waypoint
                 ref_yaw = waypoints[i, 3]
                 # update reference trajectory 
@@ -326,6 +325,9 @@ class QuadrotorFixedEnv(gym.Env):
                 reference[1, time_step] = ref_y_pos
                 reference[2, time_step] = ref_z_pos
                 reference[3, time_step] = ref_yaw
+                reference[4, time_step] = ref_x_vel
+                reference[5, time_step] = ref_y_vel
+                reference[6, time_step] = ref_z_vel
 
                 time += self.dt
                 time_step += 1
@@ -349,11 +351,6 @@ class QuadrotorFixedEnv(gym.Env):
         return u
 
     def initialize_state(self):
-        if self.randomize_waypoints:
-            # regenerate entire Lissajous path with new random parameters
-            new_waypoints = self.generate_lissajous_waypoints()
-            self.waypoints = new_waypoints
-
         # get x, y pos of first waypoint (excluding starting point)
         first_waypoint = self.waypoints[1, :]
         
@@ -400,47 +397,61 @@ class QuadrotorFixedEnv(gym.Env):
         Angles are assumed to be in the range [-pi, pi]
         '''
         angle_difference = (x - x_ref + np.pi) % (2 * np.pi) - np.pi
-        return np.abs(angle_difference).sum()
+        return np.linalg.norm(angle_difference)
 
     def _reward(self, X, u):
         current_position = X[0:3]
         X_ref = np.zeros(12)
-        if self.rew_mode == 'basic':
-            # penalize based on closest reference point and angular error
-            X_ref[0:4] = self.get_nearest_reference(current_position, nearby_timesteps=100)
-            X_err = X - X_ref
-            distance = np.linalg.norm(X_err[:3])
-            angular_err = self.angular_error(X[3:6], X_ref[3:6])
-            # take negative distance and normalize by largest distance in arena
-            reward = - (distance + 0.1 * angular_err)
+        # penalize based on closest reference point and angular error        
+        nearest_ref =  self.get_nearest_reference(current_position, nearby_timesteps=100)
+        X_ref[0:4] = nearest_ref[0:4]
+        X_ref[6:9] = nearest_ref[4:]
 
-            if not self._is_out_of_bounds(*current_position):
-                step_survival = 1
-                reward += step_survival
+        
+        X_err = X - X_ref
+        distance = np.linalg.norm(X_err[:3])
 
-            # ensure smooth actions between timesteps
-            if self.u_prev is not None:
-                reward -= 0.001*np.linalg.norm(u - self.u_prev)
-            self.u_prev = u
+        angular_err = self.angular_error(X[3:6], X_ref[3:6])
+        
+        position_std = 0.5 
+        angular_std = 0.5 
+        velocity_std = 1.0
+        
+        position_rew = 1.0 * np.exp(-distance / position_std**2)
+        angular_rew = 0.15 * np.exp(-angular_err / angular_std**2)
+        
+        # velocity reward term (used even for partially observable env)
+        velocity_error_magnitude = np.linalg.norm(X_err[6:9])
+        velocity_rew = 0.1 * np.exp(-velocity_error_magnitude / velocity_std**2)
+
+        reward = position_rew + angular_rew + velocity_rew
+
+        rew_info = {'position_rew': position_rew,
+                    'angle_rew': angular_rew,
+                    'velocity_rew': velocity_rew}
+        if not self._is_out_of_bounds(*current_position):
+            survival_rew = 0.01
+            reward += survival_rew
+            rew_info['survival_rew'] = survival_rew
+
+        # ensure smooth actions between timesteps
+        if self.u_prev is not None:
+            action_penalty = np.linalg.norm(u - self.u_prev)
+            action_reg_std = 0.5
+            action_reg_rew = 0.01 * np.exp(-action_penalty / action_reg_std**2)
+            reward += action_reg_rew
+            rew_info['action_reg_rew'] = action_reg_rew
+        self.u_prev = u
                 
-        else:
-            # advanced lqr penalty for error tracking control based upon reference waypoint
-            X_ref[0:4] = self.get_current_reference()
-            X_err = X - X_ref
-            U_err = u - np.array([0., 0., 0., self.quadrotor.params['m'] * self.quadrotor.params['g']])
-            Q = np.diag([1, 1, 1, # position
-                         1e-1, 1e-1, 1e-1, # euler angles
-                         1e-3, 1e-3, 1e-3, # linear velocity
-                         1e-3, 1e-3, 1e-3 # angular velocity
-                        ])  
-            R = np.diag([1e-2, 1e-2, 1e-2, 1e-2]) 
-            cost = (X_err.T @ Q @ X_err) + (U_err.T @ R @ U_err)
-            reward = -cost.item()
-
-        return reward
+        return reward, rew_info
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+
+        if self.randomize_waypoints:
+            # regenerate entire Lissajous path with new random parameters
+            new_waypoints = self.generate_lissajous_waypoints()
+            self.waypoints = new_waypoints
 
         if self.add_takeoff_waypoint:
             # randomize starting state
@@ -466,7 +477,12 @@ class QuadrotorFixedEnv(gym.Env):
         self.u_prev = None
 
         obs = self._get_obs()
-
+        # Initialize episode reward accumulators
+        self.episode_position_rew = 0.0
+        self.episode_angle_rew = 0.0
+        self.episode_velocity_rew = 0.0
+        self.episode_survival_rew = 0.0
+        self.episode_action_reg_rew = 0.0
         return obs, {}
 
     def step(self, action):
@@ -504,16 +520,34 @@ class QuadrotorFixedEnv(gym.Env):
         terminated = self._is_out_of_bounds(x, y, z)
         truncated = self.time_step > self.max_time_steps - 1
 
-        # TODO add yaw penalty
-        reward = self._reward(self.state, u)
-
-        return self._get_obs(), reward, terminated, truncated, {}
+        reward, rew_info = self._reward(self.state, u)
+        
+        # Accumulate reward components throughout the episode
+        self.episode_position_rew += rew_info.get('position_rew', 0.0)
+        self.episode_angle_rew += rew_info.get('angle_rew', 0.0)
+        self.episode_velocity_rew += rew_info.get('velocity_rew', 0.0)
+        self.episode_survival_rew += rew_info.get('survival_rew', 0.0)
+        self.episode_action_reg_rew += rew_info.get('action_reg_rew', 0.0)
+        
+        # Prepare info dict - Monitor wrapper extracts these at episode end
+        info = {}
+        if terminated or truncated:
+            # At episode end, provide cumulative totals
+            # Monitor wrapper will extract these values (see monitor.py line 101-102)
+            info['position_rew'] = self.episode_position_rew
+            info['angle_rew'] = self.episode_angle_rew
+            info['velocity_rew'] = self.episode_velocity_rew
+            info['survival_rew'] = self.episode_survival_rew
+            info['action_reg_rew'] = self.episode_action_reg_rew
+        
+        return self._get_obs(), reward, terminated, truncated, info
 
     def get_nearest_reference(self, current_position, nearby_timesteps=200):
         '''
-        Get nearest reference point spatially.
+        Get nearest reference point spatially (including position, yaw, and velocities).
         Looks nearby_timesteps * dt seconds ahead and behind to be lenient on the nearest reference point.
         Start of window will shrink as time runs out near the end.
+        Returns: [x, y, z, yaw, vx, vy, vz] (7 elements)
         '''
         time_step = min(self.time_step, self.max_reference_time_steps - 1)
         stop_time_step = min(time_step + nearby_timesteps//2, self.max_reference_time_steps)
@@ -535,6 +569,7 @@ class QuadrotorFixedEnv(gym.Env):
     def get_current_reference(self):
         '''
         Get reference point according to time step from smooth trajectory planning.
+        Returns: [x, y, z, yaw, vx, vy, vz] (7 elements)
         '''
         time_step = min(self.time_step, self.max_reference_time_steps - 1)
         return self.reference[:, time_step]
@@ -587,7 +622,7 @@ if __name__ == '__main__':
     
     add_takeoff_waypoint = False
     env = QuadrotorFixedEnv(waypoints=waypoints, total_time=reference_trajectory_time, control_motors=True, normalized_actions=True,
-                       render_mode=render_mode, fully_observable=fully_observable, rew_mode='basic',
+                       render_mode=render_mode, fully_observable=fully_observable,
                        add_takeoff_waypoint=add_takeoff_waypoint)
 
     model = lambda obs: env.action_space.sample()

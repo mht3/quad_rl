@@ -1,151 +1,367 @@
-import sys, os, shutil
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.callbacks import CallbackList
-import torch
-from wandb.integration.sb3 import WandbCallback
-from stable_baselines3 import PPO
-from stable_baselines3.common.policies import ActorCriticPolicy
+import warnings
+from typing import Any, ClassVar, Optional, TypeVar, Union
 
-from .policies import LSTMActorCriticPolicy
+import numpy as np
+import torch as th
+from gymnasium import spaces
+from torch.nn import functional as F
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
-from trainer import Trainer
-from algorithm_utils import SaveOnBestTrainingRewardCallback, compare_models
+from stable_baselines3.common.buffers import RolloutBuffer
+from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
+from stable_baselines3.common.policies import ActorCriticCnnPolicy, ActorCriticPolicy, BasePolicy, MultiInputActorCriticPolicy
+from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
+from stable_baselines3.common.utils import FloatSchedule, explained_variance, safe_mean
+import time, sys
+
+SelfPPO = TypeVar("SelfPPO", bound="PPO")
 
 
-class PPOTrainer(Trainer):
+class PPO(OnPolicyAlgorithm):
+    """
+    Proximal Policy Optimization algorithm (PPO) (clip version)
 
-    @staticmethod
-    def add_args(parser):
-        parser.add_argument("-w", "--warm_start_path", help='Path for warm start policy.zip file. Must be same architecture as RL policy network.', type=str, default=None)
-        parser.add_argument("-t", "--timesteps", help='number of timesteps for training', default=1e6, type=int)
-        parser.add_argument("--lr", help='learning rate', default=3e-4, type=float)
-        parser.add_argument('--policy_net',
-                            nargs='*',
-                            type=int,
-                            default=[64, 64],
-                            help='A list of integers representing the sizes of hidden layers.,e.g., --policy_net 32 64 128. Default: [64, 64]')
-        parser.add_argument('--value_net',
-                        nargs='*',
-                        type=int,
-                        default=[64, 64],
-                        help='A list of integers representing the sizes of hidden layers of the value network.')
-        parser.add_argument('--n_epochs', type=int, default=10, help='Number of epochs for PPO surrogate loss (after each rollout is collected). Default: 10')
-        parser.add_argument('--n_steps', type=int, default=2048, help='The number of steps to run for each environment per update. Default: 2048')
-        parser.add_argument('--batch_size', type=int, default=64, help='Minibatch size. Default 64')
-        parser.add_argument('--gae_lambda', type=float, default=0.95, help='TD(lambda) value for GAE.') 
-        parser.add_argument('--ent_coef', type=float, default=0.0, help='Entropy weighted loss term.') 
-        parser.add_argument('--vf_coef', type=float, default=0.5, help='Value function weighted loss term.') 
-        parser.add_argument('--stats_window_size', type=int, default=100, help='Number of episodes for rollout logging. E.g. average episode reward plot over 100 episodes.')
-        
-        # LSTM-specific arguments
-        parser.add_argument('--use_lstm', action='store_true', help='Use LSTM policy instead of MLP policy.')
-        parser.add_argument('--lstm_hidden_size', type=int, default=64, help='Hidden size of LSTM layers. Default: 64')
-        parser.add_argument('--n_lstm_layers', type=int, default=1, help='Number of LSTM layers. Default: 1')
+    Paper: https://arxiv.org/abs/1707.06347
+    Code: This implementation borrows code from OpenAI Spinning Up (https://github.com/openai/spinningup/)
+    https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail and
+    Stable Baselines (PPO2 from https://github.com/hill-a/stable-baselines)
 
-    @staticmethod
-    def get_training_kwargs(args):
-        model_kwargs = {'n_epochs': args.n_epochs,
-                        'n_steps': args.n_steps,
-                        'batch_size': args.batch_size, 
-                        'learning_rate': args.lr,
-                        'gae_lambda': args.gae_lambda,
-                        'ent_coef': args.ent_coef,
-                        'vf_coef': args.vf_coef,
-                        'stats_window_size': args.stats_window_size,
-                        'seed': args.seed # already defined in main.py
-                        }
+    Introduction to PPO: https://spinningup.openai.com/en/latest/algorithms/ppo.html
 
-        policy_net_str = "-".join(map(str, args.policy_net))
-        value_net_str = "-".join(map(str, args.value_net))
+    :param policy: The policy model to use (MlpPolicy, CnnPolicy, ...)
+    :param env: The environment to learn from (if registered in Gym, can be str)
+    :param learning_rate: The learning rate, it can be a function
+        of the current progress remaining (from 1 to 0)
+    :param n_steps: The number of steps to run for each environment per update
+        (i.e. rollout buffer size is n_steps * n_envs where n_envs is number of environment copies running in parallel)
+        NOTE: n_steps * n_envs must be greater than 1 (because of the advantage normalization)
+        See https://github.com/pytorch/pytorch/issues/29372
+    :param batch_size: Minibatch size
+    :param n_epochs: Number of epoch when optimizing the surrogate loss
+    :param gamma: Discount factor
+    :param gae_lambda: Factor for trade-off of bias vs variance for Generalized Advantage Estimator
+    :param clip_range: Clipping parameter, it can be a function of the current progress
+        remaining (from 1 to 0).
+    :param clip_range_vf: Clipping parameter for the value function,
+        it can be a function of the current progress remaining (from 1 to 0).
+        This is a parameter specific to the OpenAI implementation. If None is passed (default),
+        no clipping will be done on the value function.
+        IMPORTANT: this clipping depends on the reward scaling.
+    :param normalize_advantage: Whether to normalize or not the advantage
+    :param ent_coef: Entropy coefficient for the loss calculation
+    :param vf_coef: Value function coefficient for the loss calculation
+    :param max_grad_norm: The maximum value for the gradient clipping
+    :param use_sde: Whether to use generalized State Dependent Exploration (gSDE)
+        instead of action noise exploration (default: False)
+    :param sde_sample_freq: Sample a new noise matrix every n steps when using gSDE
+        Default: -1 (only sample at the beginning of the rollout)
+    :param rollout_buffer_class: Rollout buffer class to use. If ``None``, it will be automatically selected.
+    :param rollout_buffer_kwargs: Keyword arguments to pass to the rollout buffer on creation
+    :param target_kl: Limit the KL divergence between updates,
+        because the clipping is not enough to prevent large update
+        see issue #213 (cf https://github.com/hill-a/stable-baselines/issues/213)
+        By default, there is no limit on the kl div.
+    :param stats_window_size: Window size for the rollout logging, specifying the number of episodes to average
+        the reported success rate, mean episode length, and mean reward over
+    :param tensorboard_log: the log location for tensorboard (if None, no logging)
+    :param policy_kwargs: additional arguments to be passed to the policy on creation. See :ref:`ppo_policies`
+    :param verbose: Verbosity level: 0 for no output, 1 for info messages (such as device or wrappers used), 2 for
+        debug messages
+    :param seed: Seed for the pseudo random generators
+    :param device: Device (cpu, cuda, ...) on which the code should be run.
+        Setting it to auto, the code will be run on the GPU if possible.
+    :param _init_setup_model: Whether or not to build the network at the creation of the instance
+    """
 
-        # Update log name to include LSTM info if using LSTM
-        if args.use_lstm:
-            log_name = "{}_lstm_h{}_l{}_pi_{}_vf_{}_s_{}".format(
-                args.algorithm, args.lstm_hidden_size, args.n_lstm_layers, 
-                policy_net_str, value_net_str, args.seed)
-        else:
-            log_name = "{}_pi_{}_vf_{}_s_{}".format(args.algorithm, policy_net_str, value_net_str, args.seed)
-        
-        if args.warm_start_path is not None:
-            args.warm_start_path = os.path.abspath(args.warm_start_path)
-            if not os.path.exists(args.warm_start_path):
-                raise ValueError("Path `{}` does not exist for warm start model.".format(args.warm_start_path))
-            log_name = log_name + '_warm_start'
-        training_kwargs = {
-                    'timesteps': args.timesteps,
-                    'model_kwargs': model_kwargs,
-                    'log_name': log_name,
-                    'policy_net_list': args.policy_net,
-                    'value_net_list': args.value_net,
-                    'warm_start_path': args.warm_start_path,
-                    'use_lstm': args.use_lstm,
-                    'lstm_hidden_size': args.lstm_hidden_size,
-                    'n_lstm_layers': args.n_lstm_layers,
-                }
-        return training_kwargs
+    policy_aliases: ClassVar[dict[str, type[BasePolicy]]] = {
+        "MlpPolicy": ActorCriticPolicy,
+        "CnnPolicy": ActorCriticCnnPolicy,
+        "MultiInputPolicy": MultiInputActorCriticPolicy,
+    }
 
-    def train(self, env, model_path, model_kwargs=None, policy_net_list=None, value_net_list=None, 
-              timesteps=1e6, log_name='ppo', warm_start_path=None, use_lstm=False, 
-              lstm_hidden_size=64, n_lstm_layers=1):
+    def __init__(
+        self,
+        policy: Union[str, type[ActorCriticPolicy]],
+        env: Union[GymEnv, str],
+        learning_rate: Union[float, Schedule] = 3e-4,
+        n_steps: int = 2048,
+        batch_size: int = 64,
+        n_epochs: int = 10,
+        gamma: float = 0.99,
+        gae_lambda: float = 0.95,
+        clip_range: Union[float, Schedule] = 0.2,
+        clip_range_vf: Union[None, float, Schedule] = None,
+        normalize_advantage: bool = True,
+        ent_coef: float = 0.0,
+        vf_coef: float = 0.5,
+        max_grad_norm: float = 0.5,
+        use_sde: bool = False,
+        sde_sample_freq: int = -1,
+        rollout_buffer_class: Optional[type[RolloutBuffer]] = None,
+        rollout_buffer_kwargs: Optional[dict[str, Any]] = None,
+        target_kl: Optional[float] = None,
+        stats_window_size: int = 100,
+        tensorboard_log: Optional[str] = None,
+        policy_kwargs: Optional[dict[str, Any]] = None,
+        verbose: int = 0,
+        seed: Optional[int] = None,
+        device: Union[th.device, str] = "auto",
+        _init_setup_model: bool = True,
+    ):
+        super().__init__(
+            policy,
+            env,
+            learning_rate=learning_rate,
+            n_steps=n_steps,
+            gamma=gamma,
+            gae_lambda=gae_lambda,
+            ent_coef=ent_coef,
+            vf_coef=vf_coef,
+            max_grad_norm=max_grad_norm,
+            use_sde=use_sde,
+            sde_sample_freq=sde_sample_freq,
+            rollout_buffer_class=rollout_buffer_class,
+            rollout_buffer_kwargs=rollout_buffer_kwargs,
+            stats_window_size=stats_window_size,
+            tensorboard_log=tensorboard_log,
+            policy_kwargs=policy_kwargs,
+            verbose=verbose,
+            device=device,
+            seed=seed,
+            _init_setup_model=False,
+            supported_action_spaces=(
+                spaces.Box,
+                spaces.Discrete,
+                spaces.MultiDiscrete,
+                spaces.MultiBinary,
+            ),
+        )
 
-        if use_lstm:
-            # Use registered LSTM policy
-            policy_class = LSTMActorCriticPolicy
-            policy_kwargs = dict(
-                activation_fn=torch.nn.ReLU,
-                net_arch=dict(pi=policy_net_list, vf=value_net_list),
-                lstm_hidden_size=lstm_hidden_size,
-                n_lstm_layers=n_lstm_layers
-            )
-        else:
-            # Use standard MLP policy
-            policy_class = "MlpPolicy"
-            policy_kwargs = dict(activation_fn=torch.nn.ReLU,
-                                 net_arch=dict(pi=policy_net_list, vf=value_net_list))
-        if self.logger is not None:
-            log_model_path = os.path.join(self.cur_path, "logs", log_name)
-            tensorboard_log = os.path.join(self.cur_path, "tb/")
-            os.makedirs(log_model_path, exist_ok=True)
-            env = Monitor(env, log_model_path)
-            # setup callbacks
-            wandb_callback = WandbCallback()
-            model_save_callback = SaveOnBestTrainingRewardCallback(check_freq=10000, log_dir=log_model_path, name=self.logger.id)
-            callbacks = CallbackList([wandb_callback, model_save_callback])
-        else:
-            tensorboard_log = None
-            callbacks = None
-        if warm_start_path is not None:
-            print("Loading pretrained policy network for warm start...")
-            pretrained_model = ActorCriticPolicy.load(warm_start_path)
+        # Sanity check, otherwise it will lead to noisy gradient and NaN
+        # because of the advantage normalization
+        if normalize_advantage:
+            assert (
+                batch_size > 1
+            ), "`batch_size` must be greater than 1. See https://github.com/DLR-RM/stable-baselines3/issues/440"
 
-        # check model kwargs is not none
-        if model_kwargs is None:
-            model_kwargs = {}
-        model = PPO(policy_class, env=env, **model_kwargs, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=tensorboard_log)
+        if self.env is not None:
+            # Check that `n_steps * n_envs > 1` to avoid NaN
+            # when doing advantage normalization
+            buffer_size = self.env.num_envs * self.n_steps
+            assert buffer_size > 1 or (
+                not normalize_advantage
+            ), f"`n_steps * n_envs` must be greater than 1. Currently n_steps={self.n_steps} and n_envs={self.env.num_envs}"
+            # Check that the rollout buffer size is a multiple of the mini-batch size
+            untruncated_batches = buffer_size // batch_size
+            if buffer_size % batch_size > 0:
+                warnings.warn(
+                    f"You have specified a mini-batch size of {batch_size},"
+                    f" but because the `RolloutBuffer` is of size `n_steps * n_envs = {buffer_size}`,"
+                    f" after every {untruncated_batches} untruncated mini-batches,"
+                    f" there will be a truncated mini-batch of size {buffer_size % batch_size}\n"
+                    f"We recommend using a `batch_size` that is a factor of `n_steps * n_envs`.\n"
+                    f"Info: (n_steps={self.n_steps} and n_envs={self.env.num_envs})"
+                )
+        self.batch_size = batch_size
+        self.n_epochs = n_epochs
+        self.clip_range = clip_range
+        self.clip_range_vf = clip_range_vf
+        self.normalize_advantage = normalize_advantage
+        self.target_kl = target_kl
 
-        if warm_start_path is not None:
-            # compare models and ensure they are identical, otherwise raise error
-            compare_models(model.policy, pretrained_model)
-            model.policy.load_state_dict(pretrained_model.state_dict())
-            with torch.no_grad():
-                if hasattr(model.policy, 'log_std'):
-                    # Can explore different initializations on standard deviation of policy
-                    # model.policy.log_std.data.fill_(-1)  # std = exp(-1) = 0.368
-                    print("Warning: Starting with policy log std: ", model.policy.log_std.data)
+        if _init_setup_model:
+            self._setup_model()
 
-        # begin training
-        model.learn(total_timesteps=timesteps, callback=callbacks, tb_log_name=log_name)
-        if self.logger is not None:
-            # Check if the callback saved a best model
-            expected_model_path = os.path.join(log_model_path, self.logger.id + ".zip")
-            if not os.path.exists(expected_model_path):
-                raise ValueError('No best model was saved by the callback.')
+    def _setup_model(self) -> None:
+        super()._setup_model()
+
+        # Initialize schedules for policy/value clipping
+        self.clip_range = FloatSchedule(self.clip_range)
+        if self.clip_range_vf is not None:
+            if isinstance(self.clip_range_vf, (float, int)):
+                assert self.clip_range_vf > 0, "`clip_range_vf` must be positive, " "pass `None` to deactivate vf clipping"
+
+            self.clip_range_vf = FloatSchedule(self.clip_range_vf)
+
+    def train(self) -> None:
+        """
+        Update policy using the currently gathered rollout buffer.
+        """
+        # Switch to train mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(True)
+        # Update optimizer learning rate
+        self._update_learning_rate(self.policy.optimizer)
+        # Compute current clip range
+        clip_range = self.clip_range(self._current_progress_remaining)  # type: ignore[operator]
+        # Optional: clip range for the value function
+        if self.clip_range_vf is not None:
+            clip_range_vf = self.clip_range_vf(self._current_progress_remaining)  # type: ignore[operator]
+
+        entropy_losses = []
+        pg_losses, value_losses = [], []
+        clip_fractions = []
+
+        continue_training = True
+        # train for n_epochs epochs
+        for epoch in range(self.n_epochs):
+            approx_kl_divs = []
+            # Do a complete pass on the rollout buffer
+            for rollout_data in self.rollout_buffer.get(self.batch_size):
+                actions = rollout_data.actions
+                if isinstance(self.action_space, spaces.Discrete):
+                    # Convert discrete action from float to long
+                    actions = rollout_data.actions.long().flatten()
+
+                values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+                values = values.flatten()
+                # Normalize advantage
+                advantages = rollout_data.advantages
+                # Normalization does not make sense if mini batchsize == 1, see GH issue #325
+                if self.normalize_advantage and len(advantages) > 1:
+                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+                # ratio between old and new policy, should be one at the first iteration
+                ratio = th.exp(log_prob - rollout_data.old_log_prob)
+
+                # clipped surrogate loss
+                policy_loss_1 = advantages * ratio
+                policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
+                policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
+
+                # Logging
+                pg_losses.append(policy_loss.item())
+                clip_fraction = th.mean((th.abs(ratio - 1) > clip_range).float()).item()
+                clip_fractions.append(clip_fraction)
+
+                if self.clip_range_vf is None:
+                    # No clipping
+                    values_pred = values
+                else:
+                    # Clip the difference between old and new value
+                    # NOTE: this depends on the reward scaling
+                    values_pred = rollout_data.old_values + th.clamp(
+                        values - rollout_data.old_values, -clip_range_vf, clip_range_vf
+                    )
+                # Value loss using the TD(gae_lambda) target
+                value_loss = F.mse_loss(rollout_data.returns, values_pred)
+                value_losses.append(value_loss.item())
+
+                # Entropy loss favor exploration
+                if entropy is None:
+                    # Approximate entropy when no analytical form
+                    entropy_loss = -th.mean(-log_prob)
+                else:
+                    entropy_loss = -th.mean(entropy)
+
+                entropy_losses.append(entropy_loss.item())
+
+                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+
+                # Calculate approximate form of reverse KL Divergence for early stopping
+                # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
+                # and discussion in PR #419: https://github.com/DLR-RM/stable-baselines3/pull/419
+                # and Schulman blog: http://joschu.net/blog/kl-approx.html
+                with th.no_grad():
+                    log_ratio = log_prob - rollout_data.old_log_prob
+                    approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
+                    approx_kl_divs.append(approx_kl_div)
+
+                if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl:
+                    continue_training = False
+                    if self.verbose >= 1:
+                        print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
+                    break
+
+                # Optimization step
+                self.policy.optimizer.zero_grad()
+                loss.backward()
+                # Clip grad norm
+                th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                self.policy.optimizer.step()
+
+            self._n_updates += 1
+            if not continue_training:
+                break
+
+        explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
+
+        # Logs
+        self.logger.record("train/entropy_loss", np.mean(entropy_losses))
+        self.logger.record("train/policy_gradient_loss", np.mean(pg_losses))
+        self.logger.record("train/value_loss", np.mean(value_losses))
+        self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
+        self.logger.record("train/clip_fraction", np.mean(clip_fractions))
+        self.logger.record("train/loss", loss.item())
+        self.logger.record("train/explained_variance", explained_var)
+        if hasattr(self.policy, "log_std"):
+            self.logger.record("train/std", th.exp(self.policy.log_std).mean().item())
+
+        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/clip_range", clip_range)
+        if self.clip_range_vf is not None:
+            self.logger.record("train/clip_range_vf", clip_range_vf)
+
+    def learn(
+        self: SelfPPO,
+        total_timesteps: int,
+        callback: MaybeCallback = None,
+        log_interval: int = 1,
+        tb_log_name: str = "PPO",
+        reset_num_timesteps: bool = True,
+        progress_bar: bool = False,
+    ) -> SelfPPO:
+        return super().learn(
+            total_timesteps=total_timesteps,
+            callback=callback,
+            log_interval=log_interval,
+            tb_log_name=tb_log_name,
+            reset_num_timesteps=reset_num_timesteps,
+            progress_bar=progress_bar,
+        )
+
+    def dump_logs(self, iteration: int = 0) -> None:
+        """
+        Write log.
+
+        :param iteration: Current logging iteration
+        """
+        assert self.ep_info_buffer is not None
+        assert self.ep_success_buffer is not None
+        time_elapsed = max((time.time_ns() - self.start_time) / 1e9, sys.float_info.epsilon)
+        fps = int((self.num_timesteps - self._num_timesteps_at_start) / time_elapsed)
+        if iteration > 0:
+            self.logger.record("time/iterations", iteration, exclude="tensorboard")
+        if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
+            self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+            self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
             
-            # copy model into models folder
-            shutil.copyfile(expected_model_path, model_path)
-        return model
+            # Check if any episode in buffer has custom metrics (more robust than checking first entry)
+            has_position_rew = any("position_rew" in ep_info for ep_info in self.ep_info_buffer)
+            has_angle_rew = any("angle_rew" in ep_info for ep_info in self.ep_info_buffer)
+            has_survival_rew = any("survival_rew" in ep_info for ep_info in self.ep_info_buffer)
+            has_action_reg_rew = any("action_reg_rew" in ep_info for ep_info in self.ep_info_buffer)
+            has_velocity_rew = any("velocity_rew" in ep_info for ep_info in self.ep_info_buffer)
 
-    @staticmethod
-    def load(model_path):
-        return PPO.load(model_path)
+            # Log custom metrics if they exist in any episode
+            if has_position_rew:
+                self.logger.record("rollout/ep_position_rew_mean", 
+                                    safe_mean([ep_info.get("position_rew", 0.0) for ep_info in self.ep_info_buffer]))
+            if has_angle_rew:
+                self.logger.record("rollout/ep_angle_rew_mean", 
+                                 safe_mean([ep_info.get("angle_rew", 0.0) for ep_info in self.ep_info_buffer]))
+            if has_survival_rew:
+                self.logger.record("rollout/ep_survival_rew_mean", 
+                                 safe_mean([ep_info.get("survival_rew", 0.0) for ep_info in self.ep_info_buffer]))
+            if has_action_reg_rew:
+                self.logger.record("rollout/ep_action_reg_rew_mean", 
+                                 safe_mean([ep_info.get("action_reg_rew", 0.0) for ep_info in self.ep_info_buffer]))
+            if has_velocity_rew:
+                self.logger.record("rollout/ep_velocity_rew_mean", 
+                                 safe_mean([ep_info.get("velocity_rew", 0.0) for ep_info in self.ep_info_buffer]))
+                    
+
+        self.logger.record("time/fps", fps)
+        self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
+        self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
+        if len(self.ep_success_buffer) > 0:
+            self.logger.record("rollout/success_rate", safe_mean(self.ep_success_buffer))
+        self.logger.dump(step=self.num_timesteps)

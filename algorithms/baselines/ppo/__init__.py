@@ -1,1 +1,1 @@
-from .ppo import PPOTrainer
+from .ppo_trainer import PPOTrainer

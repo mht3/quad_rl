@@ -3,7 +3,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CallbackList
 import torch
 from wandb.integration.sb3 import WandbCallback
-from stable_baselines3 import SAC
+from .sac import SAC
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from trainer import Trainer
