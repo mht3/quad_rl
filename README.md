@@ -1,6 +1,8 @@
 # quad_rl
 Quadrotor gymnasium environments and baseline RL implementations.
 
+<img width="388" height="383" alt="image" src="https://github.com/user-attachments/assets/4d2003d6-db3d-4e0d-8fed-a5cfaae3aeec" />
+
 ## Getting Started
 
 Clone the environment and change directories. The following uses cloning via ssh:
