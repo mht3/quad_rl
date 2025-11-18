@@ -52,11 +52,11 @@ pip install -r requirements.txt
 ## Model Training
 
 ```bash
-python main.py --env_id Quadrotor-Fixed-v0 --algorithm PPO --policy_net 64 64 --value_net 64 64 --seed 42 
+python main.py --env_id Quadrotor-Fixed-v0 --algorithm PPO --seed 42 -t 10000000 --n_steps 3072 --batch_size 256 --lr 0.00005 --policy_net 512 256 128 --value_net 512 256 128
 ```
 
 ## Model Playback
 
 ```bash
-python main.py --env_id Quadrotor-Fixed-v0 --algorithm PPO --policy_net 64 64 --value_net 64 64 --seed 42 --test --render
+python main.py --env_id Quadrotor-Fixed-v0 --algorithm PPO --seed 42 -t 10000000 --n_steps 3072 --batch_size 256 --lr 0.00005 --policy_net 512 256 128 --value_net 512 256 128 --test --render
 ```
