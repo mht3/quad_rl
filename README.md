@@ -1,6 +1,14 @@
 # quad_rl
 Quadrotor gymnasium environments and baseline RL implementations.
 
+<img width="388" height="383" alt="image" src="https://github.com/user-attachments/assets/4d2003d6-db3d-4e0d-8fed-a5cfaae3aeec" />
+
+## Features
+
+- Quadrotor environments with predefined trajectories that follow Lissajous curves.
+- Baseline RL training code (PPO and SAC) from Stable-Baselines-3
+- Integration with Weights & Biases
+
 ## Getting Started
 
 Clone the environment and change directories. The following uses cloning via ssh:
@@ -52,11 +60,11 @@ pip install -r requirements.txt
 ## Model Training
 
 ```bash
-python main.py --env_id Quadrotor-Fixed-v0 --algorithm PPO --policy_net 64 64 --value_net 64 64 --seed 42 
+python main.py --env_id Quadrotor-Fixed-v0 --algorithm PPO --seed 42 -t 10000000 --n_steps 3072 --batch_size 256 --lr 0.00005 --policy_net 512 256 128 --value_net 512 256 128
 ```
 
 ## Model Playback
 
 ```bash
-python main.py --env_id Quadrotor-Fixed-v0 --algorithm PPO --policy_net 64 64 --value_net 64 64 --seed 42 --test --render
+python main.py --env_id Quadrotor-Fixed-v0 --algorithm PPO --seed 42 -t 10000000 --n_steps 3072 --batch_size 256 --lr 0.00005 --policy_net 512 256 128 --value_net 512 256 128 --test --render
 ```
