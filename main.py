@@ -44,6 +44,7 @@ def parse_args():
     parser.add_argument("--num_test_episodes", help='Number of test episodes to use for model testing.', type=int, default=5)
     parser.add_argument('--history_len', help='Window size for observation history. Defaults to 1 (no history)', type=int, default=1)
     parser.add_argument('--flatten_observation', action='store_true', help='Flag for flattening the observation space. Useful for MLPs and when history is being used.')
+    parser.add_argument('--model_path', type=str, default=None, help='Path to model file. If None, uses default path based on log name.')
     # Parse known arguments before parsing remainder of training args
     args, _ = parser.parse_known_args()
 
@@ -97,9 +98,12 @@ def parse_args():
 
     # Model Path for loading model
     cur_path = utils.get_cur_path()
-    models_folder = os.path.join(cur_path, 'models', env_id)
-    os.makedirs(models_folder, exist_ok=True)
-    model_path = os.path.join(models_folder, log_name+'_best.zip')
+    if args.model_path is not None:
+        model_path = args.model_path
+    else:
+        models_folder = os.path.join(cur_path, 'models', env_id)
+        os.makedirs(models_folder, exist_ok=True)
+        model_path = os.path.join(models_folder, log_name+'_best.zip')
 
     # parse algorithm init kwargs (algorithm dependent)
     algorithm_init_kwargs = algorithm_class.get_init_kwargs(args)
