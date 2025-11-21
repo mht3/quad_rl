@@ -127,7 +127,9 @@ class QuadrotorEnv(gym.Env):
                 self.action_space = Box(low=self.min_spin_rate, high=self.max_spin_rate,shape=(4,), dtype=np.float32)
         else:
             # action space is net torques and thrust in z direction. (tau_x, tau_y, tau_z, f_z)
+            # TODO Calculate bounds on min/max tau from dynamics and motor speed bounds
             tau_max = 2.
+            # TODO calculate bounds on f_max from dynamics and motor speed bounds
             f_max = 3 * self.m * self.g
             action_low = np.array([-tau_max, -tau_max, -tau_max, 0], dtype=np.float32)
             action_high = np.array([tau_max, tau_max, tau_max, f_max], dtype=np.float32)
@@ -218,7 +220,6 @@ class QuadrotorEnv(gym.Env):
             waypoints[i, 3] = 0.0
             
         return waypoints
-
     def _process_waypoints(self, waypoints=None):
 
         if waypoints is None:
@@ -300,6 +301,7 @@ class QuadrotorEnv(gym.Env):
             self.z_coeffs[i] = traj.z_c.flatten()
 
         # get datapoints for reference trajectory at each state
+        # reference shape: (7, total_time_steps) = [x, y, z, yaw, vx, vy, vz]
         time_step_per_waypoint = int(time_per_waypoint / self.dt)
         total_time_steps = time_step_per_waypoint * (num_waypoints - 1)
         reference = np.empty(shape=(7, total_time_steps))
@@ -395,6 +397,7 @@ class QuadrotorEnv(gym.Env):
         '''
         angle_difference = (x - x_ref + np.pi) % (2 * np.pi) - np.pi
         return np.linalg.norm(angle_difference)
+
     def _reward(self, X, u):
         current_position = X[0:3]
         X_ref = np.zeros(12)
@@ -479,7 +482,6 @@ class QuadrotorEnv(gym.Env):
         self.episode_velocity_rew = 0.0
         self.episode_survival_rew = 0.0
         self.episode_action_reg_rew = 0.0
-
         return obs, {}
 
     def step(self, action):
@@ -541,9 +543,10 @@ class QuadrotorEnv(gym.Env):
 
     def get_nearest_reference(self, current_position, nearby_timesteps=200):
         '''
-        Get nearest reference point spatially.
+        Get nearest reference point spatially (including position, yaw, and velocities).
         Looks nearby_timesteps * dt seconds ahead and behind to be lenient on the nearest reference point.
         Start of window will shrink as time runs out near the end.
+        Returns: [x, y, z, yaw, vx, vy, vz] (7 elements)
         '''
         time_step = min(self.time_step, self.max_reference_time_steps - 1)
         stop_time_step = min(time_step + nearby_timesteps//2, self.max_reference_time_steps)
@@ -565,6 +568,7 @@ class QuadrotorEnv(gym.Env):
     def get_current_reference(self):
         '''
         Get reference point according to time step from smooth trajectory planning.
+        Returns: [x, y, z, yaw, vx, vy, vz] (7 elements)
         '''
         time_step = min(self.time_step, self.max_reference_time_steps - 1)
         return self.reference[:, time_step]
