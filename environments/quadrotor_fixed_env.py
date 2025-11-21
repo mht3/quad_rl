@@ -1,11 +1,4 @@
-import matplotlib.pyplot as plt
-import gymnasium as gym
-from gymnasium.spaces import Box
 import numpy as np
-from .quadrotor_utils import Quadrotor, TrajectoryGenerator, run_single_episode
-from scipy import linalg
-import time
-
 from .quadrotor_env import QuadrotorEnv
 
 class QuadrotorFixedEnv(QuadrotorEnv):
@@ -107,34 +100,3 @@ class QuadrotorFixedEnv(QuadrotorEnv):
             waypoints[i, 3] = 0.0
             
         return waypoints
-
-if __name__ == '__main__':
-    show_gui = True
-    fully_observable = True
-    # Use waypoints=None to trigger the new default randomized Lissajous path behavior
-    waypoints = None
-    num_waypoints = 64
-
-    time_per_waypoint = 10.0 / num_waypoints
-
-    reference_trajectory_time = num_waypoints * time_per_waypoint
-
-    if show_gui:
-        render_mode = 'human'
-    else:
-        render_mode = None
-    
-    add_takeoff_waypoint = False
-    env = QuadrotorFixedEnv(waypoints=waypoints, total_time=reference_trajectory_time, control_motors=True, normalized_actions=True,
-                       render_mode=render_mode, fully_observable=fully_observable,
-                       add_takeoff_waypoint=add_takeoff_waypoint)
-
-    model = lambda obs: env.action_space.sample()
-    if not show_gui:
-        num_episodes = 100
-        reward = 0
-        for i in range(num_episodes):
-            reward += run_single_episode(model, env)
-        print("Avg Episode Reward: {}".format(reward / num_episodes))
-    else:
-        run_single_episode(model, env)
