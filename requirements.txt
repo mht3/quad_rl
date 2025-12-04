@@ -6,3 +6,4 @@ tensorboard==2.20.0
 wandb==0.22.3
 stable-baselines3==2.7.0
 pytest==8.4.2
+tqdm==4.67

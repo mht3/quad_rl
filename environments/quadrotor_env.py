@@ -437,7 +437,7 @@ class QuadrotorEnv(gym.Env):
         if self.u_prev is not None:
             action_penalty = np.linalg.norm(u - self.u_prev)
             action_reg_std = 0.5
-            action_reg_rew = 0.01 * np.exp(-action_penalty / action_reg_std**2)
+            action_reg_rew = 0.1 * np.exp(-action_penalty / action_reg_std**2)
             reward += action_reg_rew
             rew_info['action_reg_rew'] = action_reg_rew
         self.u_prev = u
@@ -466,9 +466,9 @@ class QuadrotorEnv(gym.Env):
         self.t = 0
         self.time_step = 0
         if self.add_takeoff_waypoint:
-            self.target_waypoint_idx = 1  # Skip takeoff waypoint, start with first real waypoint
+            self.target_waypoint_idx = 1
         else:
-            self.target_waypoint_idx = 0  # Start with first waypoint directly
+            self.target_waypoint_idx = 0 
         self.start_time = time.time()
         self.quadrotor.initialize_flight_tracking(x=self.state[0], y=self.state[1], z=self.state[2],
                                                   yaw=self.state[3], pitch=self.state[4], roll=self.state[5])

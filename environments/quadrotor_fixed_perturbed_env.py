@@ -43,7 +43,7 @@ class QuadrotorFixedPerturbedEnv(QuadrotorFixedEnv):
         parser.add_argument('--boundary_length', type=int, default=5)
         parser.add_argument('--total_time', type=float, default=None)
         parser.add_argument('--time_per_waypoint', type=float, default=0.15625)
-        parser.add_argument('--perturbation_std', type=float, default=0.1)
+        parser.add_argument('--perturbation_std', type=float, default=0.05)
 
     
     @staticmethod

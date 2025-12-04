@@ -161,10 +161,10 @@ def main():
         print("Loading model...", end=' ')
         model = algorithm.load(model_path)
         print("Done.")
-
-    # run test episodes and check reward
-    print("Running {} test episode(s)...".format(num_test_episodes))
-    test_model(model, env, num_episodes=num_test_episodes)
+        
+        # run test episodes and check reward
+        print("Running {} test episode(s)...".format(num_test_episodes))
+        test_model(model, env, num_episodes=num_test_episodes)
 
 if __name__ == '__main__':
     main()
