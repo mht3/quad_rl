@@ -14,7 +14,7 @@ Quadrotor gymnasium environments and baseline RL implementations.
 Clone the environment and change directories. The following uses cloning via ssh:
 
 ```bash
-git@github.com:mht3/quad_rl.git
+git clone git@github.com:mht3/quad_rl.git
 cd quad_rl
 ```
 
