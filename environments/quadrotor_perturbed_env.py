@@ -1,13 +1,13 @@
 import numpy as np
-from .quadrotor_fixed_env import QuadrotorFixedEnv
+from .quadrotor_env import QuadrotorEnv
 
-class QuadrotorFixedPerturbedEnv(QuadrotorFixedEnv):
+class QuadrotorPerturbedEnv(QuadrotorEnv):
 
     metadata = {"render_modes": ["human"], "render_fps": 30}
 
     def __init__(self, waypoints=None, total_time=None, render_mode=None, control_motors=True,
                  normalized_actions=True, fully_observable=True, boundary_length=5,
-                 time_per_waypoint=0.15625, add_takeoff_waypoint=False, perturbation_std=0.1):
+                 time_per_waypoint=0.15625, add_takeoff_waypoint=False, perturbation_std=0.05):
         '''
         Initializes the quadrotor environment. Race track is a single lissajous curves with many twists and turns. Reference trajectory is 18 seconds, or 1800 steps. The only randomized parameter is this height of the curve.
         Waypoints:
@@ -56,10 +56,9 @@ class QuadrotorFixedPerturbedEnv(QuadrotorFixedEnv):
                   'time_per_waypoint': args.time_per_waypoint,
                   'perturbation_std': args.perturbation_std,
                   }
-
         return kwargs
 
-    def generate_lissajous_waypoints(self, n_waypoints=64):
+    def generate_lissajous_waypoints(self):
         """
         Generate waypoints following a 3D Lissajous curve pattern.
         https://en.wikipedia.org/wiki/Lissajous_curve
@@ -68,10 +67,7 @@ class QuadrotorFixedPerturbedEnv(QuadrotorFixedEnv):
         x(t) = alpha*sin(t)
         y(t) = beta*sin(n*t + phi)
         z(t) = gamma*sin(m*t + psi) + z_offset
-        
-        Args:
-            n_waypoints: Number of waypoints to generate
-            
+
         Returns:
             numpy array of [x, y, z, yaw] waypoints
         """
@@ -88,10 +84,10 @@ class QuadrotorFixedPerturbedEnv(QuadrotorFixedEnv):
         beta = 2
         gamma = 1.1
         
-        waypoints = np.zeros((n_waypoints, 4))
+        waypoints = np.zeros((self.num_waypoints, 4))
         
-        for i in range(n_waypoints):
-            t = 2 * np.pi * i / (n_waypoints - 1)
+        for i in range(self.num_waypoints):
+            t = 2 * np.pi * i / (self.num_waypoints - 1)
             
             x = alpha * np.sin(t)
             y = beta * np.sin(n * t + phi)

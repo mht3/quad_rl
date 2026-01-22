@@ -4,6 +4,7 @@ import environments
 import algorithms
 import argparse
 import importlib
+from datetime import datetime
 import gymnasium as gym
 import wandb
 import numpy as np
@@ -82,6 +83,14 @@ def parse_args():
     log_name = algorithm_train_kwargs.get('log_name', default_log_name)
     if args.history_len > 1:
         log_name = log_name + '_obs_history_{}'.format(args.history_len)
+    
+    # add unique id to model name
+    if train:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        log_name = "{}_{}".format(log_name, timestamp)
+    # set algorithm log name to updated log_name
+    algorithm_train_kwargs['log_name'] = log_name
+    
     # parse optional environment kwargs
     if env_id in environments.CUSTOM_ENV_CLASSES:
         env_specific_kwargs = env_class.get_env_kwargs(args)
@@ -100,6 +109,8 @@ def parse_args():
     cur_path = utils.get_cur_path()
     if args.model_path is not None:
         model_path = args.model_path
+    elif args.test:
+        raise ValueError("--model_path must be specified when using --test")
     else:
         models_folder = os.path.join(cur_path, 'models', env_id)
         os.makedirs(models_folder, exist_ok=True)

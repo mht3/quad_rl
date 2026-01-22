@@ -147,43 +147,47 @@ def track_data(obs, action, env, model, data):
     
 if __name__ == '__main__':
     cur_path = os.path.dirname(os.path.realpath(__file__))
-    show_gui = False
-    perturbation_std = 0.0
-    model_dir = 'models'
-    model_path = os.path.join(model_dir, 'Quadrotor-Fixed-Perturbed-v0/PPO_pi_512-256-128_vf_512-256-128_s_42_best.zip')
+    show_gui = True
+    model_dir = os.path.join('models', 'Quadrotor-Fixed-v0')
+    policy_file = 'PPO_pi_512-256-128-128_vf_512-256-128-128_s_42_2026-01-07_15-28-46_best.zip'
+    model_path = os.path.join(model_dir, policy_file)
     if show_gui:
         render_mode = 'human'
     else:
         render_mode = None
-    
-    env = gym.make('Quadrotor-Fixed-Perturbed-v0', perturbation_std=perturbation_std, render_mode=render_mode)
-    env = env.unwrapped
+
     # Load model
     print("Loading model...", end=' ')
     model = algorithms.PPOTrainer.load(model_path)
     print("Done.")
 
-    terminate = False
-    truncate = False
-    obs,_ = env.reset()
-    rew = 0
+    perturbation_stds = [0.0, 0.05, 0.1, 0.2]
+    for perturbation_std in perturbation_stds:
 
-    data = {}
-    while not truncate and not terminate:
-        action = utils.model_inference(obs, model)
-        if env.time_step % 5 == 0:
-            track_data(obs, action, env, model, data)
-        obs, rewards, terminate, truncate, info = env.step(action)
-        rew += rewards
-        if (truncate or terminate) and show_gui:
-            # save last frame of quadrotor and save as 'flight_result_perturb_{perturbation_std}.png'
-            filename = f'flight_result_perturb_{perturbation_std}.png'
-            save_path = os.path.join(cur_path, 'images', filename)
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            env.quadrotor.ax.figure.savefig(save_path, dpi=150, bbox_inches='tight')
-            print(f"Flight result saved to {save_path}")
-    
-    print("Episode Reward: {}".format(rew))
-    filename = f'time_results_perturb_{perturbation_std}.png'
+        env = gym.make('Quadrotor-Fixed-v0', perturbation_std=perturbation_std, render_mode=render_mode, fixed_perturbation_seed=18, time_per_waypoint=0.234375)
+        env = env.unwrapped
 
-    plot_results(data, env, filename)
+        terminate = False
+        truncate = False
+        obs,_ = env.reset()
+        rew = 0
+
+        data = {}
+        while not truncate and not terminate:
+            action = utils.model_inference(obs, model)
+            if env.time_step % 5 == 0:
+                track_data(obs, action, env, model, data)
+            obs, rewards, terminate, truncate, info = env.step(action)
+            rew += rewards
+            if (truncate or terminate) and show_gui:
+                # save last frame of quadrotor and save as 'flight_result_perturb_{perturbation_std}.png'
+                filename = f'flight_{policy_file}_perturb_{perturbation_std}.png'
+                save_path = os.path.join(cur_path, 'images', filename)
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                env.quadrotor.ax.figure.savefig(save_path, dpi=150, bbox_inches='tight')
+                print(f"Flight result saved to {save_path}")
+        
+        print("Episode Reward: {}".format(rew))
+        filename = f'time_{policy_file}_perturb_{perturbation_std}.png'
+
+        plot_results(data, env, filename)

@@ -4,7 +4,7 @@ __pycache__/
 
 # jupyter notebook
 .ipynb_checkpoints
-
+.ipynb
 # others
 wandb/
 models/

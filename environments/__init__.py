@@ -11,13 +11,20 @@ register(
 )
 
 register(
-    id='Quadrotor-Fixed-Perturbed-v0',
-    entry_point='environments.quadrotor_fixed_perturbed_env:QuadrotorFixedPerturbedEnv',
+    id='Quadrotor-Perturbed-v0',
+    entry_point='environments.quadrotor_perturbed_env:QuadrotorPerturbedEnv',
+)
+
+register(
+    id='Quadrotor-Perturbed-Lissajous-v0',
+    entry_point='environments.quadrotor_perturbed_lissajous_env:QuadrotorPerturbedLissajousEnv',
 )
 
 # Dictionary of all environment classes that require custom command line arguments.
 CUSTOM_ENV_CLASSES = {
     'Quadrotor-v0': 'environments.quadrotor_env:QuadrotorEnv',
     'Quadrotor-Fixed-v0': 'environments.quadrotor_fixed_env:QuadrotorFixedEnv',
-    'Quadrotor-Fixed-Perturbed-v0': 'environments.quadrotor_fixed_perturbed_env:QuadrotorFixedPerturbedEnv',
+    'Quadrotor-Perturbed-v0': 'environments.quadrotor_perturbed_env:QuadrotorPerturbedEnv',
+    'Quadrotor-Perturbed-Lissajous-v0': 'environments.quadrotor_perturbed_lissajous_env:QuadrotorPerturbedLissajousEnv',
+
 }

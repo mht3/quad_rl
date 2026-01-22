@@ -1,18 +1,17 @@
 import numpy as np
 from .quadrotor_env import QuadrotorEnv
 
-class QuadrotorFixedEnv(QuadrotorEnv):
+class QuadrotorPerturbedLissajousEnv(QuadrotorEnv):
 
     metadata = {"render_modes": ["human"], "render_fps": 30}
 
     def __init__(self, waypoints=None, total_time=None, render_mode=None, control_motors=True,
-                 normalized_actions=True, fully_observable=True, boundary_length=5,
-                 time_per_waypoint=0.15625, add_takeoff_waypoint=False, perturbation_std=0.0,
-                 fixed_perturbation_seed: int = 0, sensitivity_std=0.0):
+                 normalized_actions=True, fully_observable=True, boundary_length=6,
+                 time_per_waypoint=0.15625, add_takeoff_waypoint=False, perturbation_std=0.5):
         '''
         Initializes the quadrotor environment. Race track is a single lissajous curves with many twists and turns. Reference trajectory is 18 seconds, or 1800 steps. The only randomized parameter is this height of the curve.
         Waypoints:
-            Optional 2D list or numpy array of goal positional coordinates for the drone. Otherwise will randomize with lissajous curves.
+            2D list or numpy array of goal positional coordinates for the drone.
         total_time:
             total time for drone to fly through waypoints. Used for creating smooth trajectories. Defaults to 4 seconds per waypoint.
         render_mode:
@@ -30,28 +29,12 @@ class QuadrotorFixedEnv(QuadrotorEnv):
         add_takeoff_waypoint: bool
             If True, automatically add takeoff waypoint at index 0. If False, use waypoints as-is.
         perturbation_std: float
-            Additive zero mean gaussian noise perturbation for each waypoint position. This is fixed noise (once during initialization). See QuadrotorPerturbedEnv for perterbed waypoints each reset.
-        fixed_perturbation_seed: int
-            Seed used ONLY for the fixed waypoint position perturbation. This is intentionally independent from
-            any global NumPy seeding done elsewhere.
-        sensitivity_std: float
-            Standard deviation for perturbing the fixed waypoints a second time (used for evaluating sensitivity)
+            Additive zero mean gaussian noise perturbation for the lissajous curve parameters alpha, beta, and gamma.
         '''
         self.perturbation_std = perturbation_std
-        self.num_waypoints = 64 if waypoints is None else len(waypoints)
-        self.fixed_perturbation_seed = fixed_perturbation_seed
-        self.sensitivity_std = sensitivity_std
-        self._fixed_perturbation_rng = np.random.default_rng(self.fixed_perturbation_seed)
-        self.fixed_pos_perturbation = self._fixed_perturbation_rng.normal(
-            loc=0.0,
-            scale=self.perturbation_std,
-            size=(self.num_waypoints, 3),
-        )
-
         super().__init__(waypoints=waypoints, total_time=total_time, render_mode=render_mode, control_motors=control_motors,
                          normalized_actions=normalized_actions, fully_observable=fully_observable, boundary_length=boundary_length,
                          time_per_waypoint=time_per_waypoint, add_takeoff_waypoint=add_takeoff_waypoint)
-
     @staticmethod
     def add_args(parser):
         parser.add_argument('--no_control_motors', action='store_false', dest='control_motors', default=True)
@@ -60,9 +43,7 @@ class QuadrotorFixedEnv(QuadrotorEnv):
         parser.add_argument('--boundary_length', type=int, default=5)
         parser.add_argument('--total_time', type=float, default=None)
         parser.add_argument('--time_per_waypoint', type=float, default=0.15625)
-        parser.add_argument('--perturbation_std', type=float, default=0.0)
-        parser.add_argument('--fixed_perturbation_seed', type=int, default=0)
-        parser.add_argument('--sensitivity_std', type=float, default=0.0)
+        parser.add_argument('--perturbation_std', type=float, default=0.5)
 
     
     @staticmethod
@@ -74,9 +55,6 @@ class QuadrotorFixedEnv(QuadrotorEnv):
                   'total_time': args.total_time,
                   'time_per_waypoint': args.time_per_waypoint,
                   'perturbation_std': args.perturbation_std,
-                  'fixed_perturbation_seed': args.fixed_perturbation_seed,
-                  'sensitivity_std': args.sensitivity_std,
-
                   }
 
         return kwargs
@@ -90,7 +68,7 @@ class QuadrotorFixedEnv(QuadrotorEnv):
         x(t) = alpha*sin(t)
         y(t) = beta*sin(n*t + phi)
         z(t) = gamma*sin(m*t + psi) + z_offset
-
+            
         Returns:
             numpy array of [x, y, z, yaw] waypoints
         """
@@ -99,13 +77,13 @@ class QuadrotorFixedEnv(QuadrotorEnv):
         # z oscillations
         m = 4
 
-        z_offset = np.random.uniform(2.5, 3.25)
+        z_offset = np.random.uniform(2.6, 3.25)
         phi = np.pi / 4
         psi = np.pi / 4
         
-        alpha = 2
-        beta = 2
-        gamma = 1.1
+        alpha = 2.0 + np.random.normal(loc=0.0, scale=self.perturbation_std, size=(1,))
+        beta = 1.1 + np.random.normal(loc=0.0, scale=self.perturbation_std, size=(1,))
+        gamma = 1.1 + np.random.normal(loc=0.0, scale=self.perturbation_std, size=(1,))
         
         waypoints = np.zeros((self.num_waypoints, 4))
         
@@ -120,9 +98,5 @@ class QuadrotorFixedEnv(QuadrotorEnv):
             waypoints[i, 1] = y
             waypoints[i, 2] = z
             waypoints[i, 3] = 0.0
-            waypoints[i, :3] += np.random.normal(loc=0.0, scale=self.sensitivity_std, size=(3,))
-
-        # add fixed noise on position
-        waypoints[:, :3] += self.fixed_pos_perturbation
 
         return waypoints

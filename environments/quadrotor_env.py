@@ -11,7 +11,7 @@ class QuadrotorEnv(gym.Env):
 
     def __init__(self, waypoints=None, total_time=None, render_mode=None, control_motors=True,
                  normalized_actions=True, fully_observable=True, boundary_length=5,
-                 time_per_waypoint=0.15625, add_takeoff_waypoint=False):
+                 time_per_waypoint=0.15625, add_takeoff_waypoint=False, ):
         '''
         Initializes the quadrotor environment. More complicated, longer lissajous curves with many twists and turns. Each trajectory is 18 seconds, or 1800 steps
         Waypoints:
@@ -39,11 +39,11 @@ class QuadrotorEnv(gym.Env):
         self.total_time = total_time
         if waypoints is None:
             # will generate randomized Lissajous path
-            num_waypoints = 64
+            self.num_waypoints = 64
         else:
-            num_waypoints = len(waypoints)
+            self.num_waypoints = len(waypoints)
         if self.total_time is None:
-            self.total_time = num_waypoints * time_per_waypoint
+            self.total_time = self.num_waypoints * time_per_waypoint
         self.max_runtime = 1.2 * self.total_time
         self.dt = 0.01
         self.max_time_steps = int(self.max_runtime / self.dt)
@@ -83,7 +83,6 @@ class QuadrotorEnv(gym.Env):
         else:
             show_animation = False
 
-
         # setup quadrotor object
         self.quadrotor = Quadrotor(self.m, self.Jx, self.Jy, self.Jz, self.l, self.g, boundary_length=boundary_length, show_animation=show_animation)
 
@@ -92,11 +91,9 @@ class QuadrotorEnv(gym.Env):
 
         self.fully_observable = fully_observable
 
-        # full state space is position, orientation, linear velocity, and angular velocity and reference (x, y, z, yaw, vx, vy, vz)
-        state_high = np.array([boundary_length/2, boundary_length/2, boundary_length, np.pi, np.pi, np.pi, 5, 5, 5, np.pi, np.pi, np.pi,
-                                boundary_length/2, boundary_length/2, boundary_length, np.pi, 5, 5, 5], dtype=np.float32)
-        state_low = np.array([-boundary_length/2, -boundary_length/2, 0, -np.pi, -np.pi, -np.pi, -5, -5, -5, -np.pi, -np.pi, -np.pi,
-                            -boundary_length/2, -boundary_length/2, 0, -np.pi, -5, -5, -5], dtype=np.float32)
+        # observation space: delta_pos, delta_angles, current_vel, current_omega, ref_vel
+        state_high = np.array([boundary_length, boundary_length, boundary_length, np.pi, np.pi, np.pi, 5, 5, 5, 2*np.pi, 2*np.pi, 2*np.pi, 5, 5, 5], dtype=np.float32)
+        state_low = np.array([-boundary_length, -boundary_length, -boundary_length, -np.pi, -np.pi, -np.pi, -5, -5, -5, -2*np.pi, -2*np.pi, -2*np.pi, -5, -5, -5], dtype=np.float32)
 
         self.state_space = Box(low=state_low, high=state_high, dtype=np.float32)
 
@@ -104,11 +101,9 @@ class QuadrotorEnv(gym.Env):
             self.observation_space = self.state_space
         else:
             # partial observable case
-            # observation space is noisy measurments of position, yaw and reference (x, y, z, yaw)
-            obs_high = np.array([boundary_length/2, boundary_length/2, boundary_length, np.pi,
-                                    boundary_length/2, boundary_length/2, boundary_length, np.pi,], dtype=np.float32)
-            obs_low = np.array([-boundary_length/2, -boundary_length/2, 0, -np.pi,
-                                -boundary_length/2, -boundary_length/2, 0, -np.pi,], dtype=np.float32)
+            # observation space is reference minus noisy measurments of position, yaw
+            obs_high = np.array([boundary_length, boundary_length, boundary_length, np.pi], dtype=np.float32)
+            obs_low = np.array([-boundary_length, -boundary_length, -boundary_length, -np.pi], dtype=np.float32)
             self.observation_space = Box(low=obs_low, high=obs_high, dtype=np.float32)
 
         self.normalized_actions = normalized_actions
@@ -176,7 +171,7 @@ class QuadrotorEnv(gym.Env):
 
         return kwargs
 
-    def generate_lissajous_waypoints(self, n_waypoints=64):
+    def generate_lissajous_waypoints(self):
         """
         Generate waypoints following a 3D Lissajous curve pattern.
         https://en.wikipedia.org/wiki/Lissajous_curve
@@ -186,9 +181,6 @@ class QuadrotorEnv(gym.Env):
         y(t) = beta*sin(n*t + phi)
         z(t) = gamma*sin(m*t + psi) + z_offset
         
-        Args:
-            n_waypoints: Number of waypoints to generate
-            
         Returns:
             numpy array of [x, y, z, yaw] waypoints
         """
@@ -205,10 +197,10 @@ class QuadrotorEnv(gym.Env):
         beta = 2
         gamma = 1.1
         
-        waypoints = np.zeros((n_waypoints, 4))
+        waypoints = np.zeros((self.num_waypoints, 4))
         
-        for i in range(n_waypoints):
-            t = 2 * np.pi * i / (n_waypoints - 1)
+        for i in range(self.num_waypoints):
+            t = 2 * np.pi * i / (self.num_waypoints - 1)
             
             x = alpha * np.sin(t)
             y = beta * np.sin(n * t + phi)
@@ -220,6 +212,7 @@ class QuadrotorEnv(gym.Env):
             waypoints[i, 3] = 0.0
             
         return waypoints
+        
     def _process_waypoints(self, waypoints=None):
 
         if waypoints is None:
@@ -371,7 +364,7 @@ class QuadrotorEnv(gym.Env):
         self.state = np.zeros(12)
 
         self.state[0:2] = xy_pos
-        # randomize yaw around 0 
+        # randomize yaw to some small delta around 0 
         self.state[3] = np.random.uniform(low=-np.pi/32, high=np.pi/32, size=1)
 
         # create visited array for waypoints and set first to true
@@ -390,13 +383,16 @@ class QuadrotorEnv(gym.Env):
         self.visited_waypoints = np.zeros(self.waypoints.shape[0], dtype=bool)
         self.visited_waypoints[0] = True
 
-    def angular_error(self, x, x_ref):
+    def angular_error(self, x, x_ref, element_wise=False):
         '''
         Returns the angular error between a vector of angles and their references.
         Angles are assumed to be in the range [-pi, pi]
         '''
-        angle_difference = (x - x_ref + np.pi) % (2 * np.pi) - np.pi
-        return np.linalg.norm(angle_difference)
+        angle_difference = (x_ref - x + np.pi) % (2 * np.pi) - np.pi
+        if element_wise:
+            return angle_difference
+        else:
+            return np.linalg.norm(angle_difference)
 
     def _reward(self, X, u):
         current_position = X[0:3]
@@ -407,7 +403,7 @@ class QuadrotorEnv(gym.Env):
         X_ref[6:9] = nearest_ref[4:]
 
         
-        X_err = X - X_ref
+        X_err = X_ref - X
         distance = np.linalg.norm(X_err[:3])
 
         angular_err = self.angular_error(X[3:6], X_ref[3:6])
@@ -428,7 +424,7 @@ class QuadrotorEnv(gym.Env):
         rew_info = {'position_rew': position_rew,
                     'angle_rew': angular_rew,
                     'velocity_rew': velocity_rew}
-        if not self._is_out_of_bounds(*current_position):
+        if not (self._is_out_of_bounds(*current_position)):
             survival_rew = 0.01
             reward += survival_rew
             rew_info['survival_rew'] = survival_rew
@@ -576,12 +572,18 @@ class QuadrotorEnv(gym.Env):
     def _get_obs(self):
         current_reference = self.get_current_reference()
         if self.fully_observable:
-            # return full state (all 12 variables) plus reference
-            return np.concatenate([self.state, current_reference], dtype=np.float32)
+            # observation: delta_pos, delta_angles, current_vel, current_omega, ref_vel
+            delta_pos = current_reference[:3] - self.state[:3]
+            reference_angles = np.array([current_reference[3], 0.0, 0.0], dtype=np.float32)
+            delta_angles = self.angular_error(self.state[3:6], reference_angles, element_wise=True)
+            current_velocity = self.state[6:9]
+            reference_velocity = current_reference[4:7]
+            current_omega = self.state[9:]
+            return np.concatenate([delta_pos, delta_angles, current_velocity, current_omega, reference_velocity], dtype=np.float32)
         else:
-            # return only noisy sensor measurements (y = [x, y, z, yaw]) plus reference
+            # return only reference minus noisy sensor measurements (y = [x, y, z, yaw])
             obs = self.quadrotor.get_sensor_measurements()
-            return np.concatenate([obs, current_reference], dtype=np.float32)
+            return current_reference[:4] - obs
     
     def _is_out_of_bounds(self, x, y, z):
         out_of_bounds = z < 0 or abs(x) > self.boundary_length/2 or abs(y) > self.boundary_length/2 or z > self.boundary_length
@@ -606,7 +608,6 @@ class QuadrotorEnv(gym.Env):
 if __name__ == '__main__':
     show_gui = True
     fully_observable = True
-    # Use waypoints=None to trigger the new default randomized Lissajous path behavior
     waypoints = None
     num_waypoints = 64
 

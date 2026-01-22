@@ -4,7 +4,6 @@ from stable_baselines3.common.callbacks import CallbackList
 import torch
 from wandb.integration.sb3 import WandbCallback
 from .ppo import PPO
-from stable_baselines3.common.policies import ActorCriticPolicy
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from trainer import Trainer
@@ -32,6 +31,8 @@ class PPOTrainer(Trainer):
         parser.add_argument('--n_steps', type=int, default=2048, help='The number of steps to run for each environment per update. Default: 2048')
         parser.add_argument('--batch_size', type=int, default=64, help='Minibatch size. Default 64')
         parser.add_argument('--gae_lambda', type=float, default=0.95, help='TD(lambda) value for GAE.') 
+        parser.add_argument('--gamma', type=float, default=0.99, help='Discount factor,') 
+
         parser.add_argument('--ent_coef', type=float, default=0.0, help='Entropy weighted loss term.') 
         parser.add_argument('--vf_coef', type=float, default=0.5, help='Value function weighted loss term.') 
         parser.add_argument('--stats_window_size', type=int, default=100, help='Number of episodes for rollout logging. E.g. average episode reward plot over 100 episodes.')
@@ -43,6 +44,7 @@ class PPOTrainer(Trainer):
                         'batch_size': args.batch_size, 
                         'learning_rate': args.lr,
                         'gae_lambda': args.gae_lambda,
+                        'gamma': args.gamma,
                         'ent_coef': args.ent_coef,
                         'vf_coef': args.vf_coef,
                         'stats_window_size': args.stats_window_size,
@@ -93,7 +95,8 @@ class PPOTrainer(Trainer):
             callbacks = None
         if warm_start_path is not None:
             print("Loading pretrained policy network for warm start...")
-            pretrained_model = ActorCriticPolicy.load(warm_start_path)
+            pretrained_ppo = PPO.load(warm_start_path, env=None)
+            pretrained_model = pretrained_ppo.policy
 
         # check model kwargs is not none
         if model_kwargs is None:
